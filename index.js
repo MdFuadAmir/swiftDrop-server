@@ -12,19 +12,21 @@ const nodemailer = require("nodemailer");
 const app = express();
 const port = process.env.PORT || 3000;
 //===================== middleware ====================//
-app.use(cors());
+app.use(cors({
+  origin: "http://localhost:5173",
+  credentials: true,
+}));
 app.use(express.json());
 //===================== firebase admin setup ====================//
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf8"
+);
 const serviceAccount = JSON.parse(decoded);
-// const serviceAccount = require("./firebase-admin-key.json");
-const { cache } = require("react");
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 //===================== MongoDB connection string ====================//
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.sldyvva.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-// MongoClient setup করা হলো (Stable API version সহ)
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -41,7 +43,6 @@ async function run() {
     const usersCollection = db.collection("users");
     const parcelCollection = db.collection("parcels");
     const ridersCollection = db.collection("riders");
-    const trackingCollection = db.collection("tracking");
     const paymentCollection = db.collection("payments");
     //================= custom middlewares =================//
     // 🔹 Firebase token verify middleware
@@ -114,13 +115,13 @@ async function run() {
         html: `<b>Thank you for the payment?</b>`, // html body
       };
       try {
-  const emailInfo = emailTransport.sendMail(emailObject);
-  console.log("Message sent: %s", emailInfo.messageId);
-  res.send({result: 'success'})
-} catch (err) {
-  console.error("Error while sending mail", err);
-  res.send({result:'email failed'})
-}
+        const emailInfo = await emailTransport.sendMail(emailObject);
+        console.log("Message sent: %s", emailInfo.messageId);
+        res.send({ result: "success" });
+      } catch (err) {
+        console.error("Error while sending mail", err);
+        res.send({ result: "email failed" });
+      }
     });
     //================= Users APIs =================//
     // 🔹 Get user role by email
@@ -142,22 +143,17 @@ async function run() {
     // 🔹 Create user
     app.post("/users", async (req, res) => {
       const email = req.body.email;
-      // 1. Check if already exists with this email
       const userExist = await usersCollection.findOne({ email });
       if (userExist) {
-        // todo  //  update last login info
-        // যদি already থাকে তাহলে নতুন করে insert করবো না
         return res.status(200).send({
           success: false,
           message: "User already exists...",
         });
       }
-      // 2. যদি না থাকে, তাহলে insert করবো
       const user = req.body;
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
-    // 🔹 Search user by email (live search)
     app.get("/users/search", async (req, res) => {
       const emailQuery = req.query.email;
       if (!emailQuery) {
@@ -167,7 +163,7 @@ async function run() {
       try {
         const user = await usersCollection
           .find({ email: { $regex: regex } })
-          .project({ email: 1, created_at: 1, role: 1 }) //////
+          .project({ email: 1, created_at: 1, role: 1 })
           .limit(10)
           .toArray();
         res.send(user);
@@ -222,7 +218,7 @@ async function run() {
       }
     });
 
-    app.post("/parcels", verifyFBToken, async (req, res) => {
+    app.post("/parcels", async (req, res) => {
       try {
         const newParcel = req.body;
         const result = await parcelCollection.insertOne(newParcel);
@@ -289,22 +285,19 @@ async function run() {
       verifyAdmin,
       async (req, res) => {
         const id = req.params.id;
-        const { status } = req.body; // শুধু status আসবে
+        const { status } = req.body;
         try {
-          // 1. Rider DB থেকে rider info খুঁজে আনবো
           const rider = await ridersCollection.findOne({
             _id: new ObjectId(id),
           });
           if (!rider) {
             return res.status(404).send({ message: "Rider not found" });
           }
-          // 2. Rider এর status update করবো
           const updatedDoc = { $set: { status } };
           const result = await ridersCollection.updateOne(
             { _id: new ObjectId(id) },
             updatedDoc
           );
-          // 3. যদি active করা হয় → User role = "rider"
           if (status === "active" && rider.email) {
             await usersCollection.updateOne(
               { email: rider.email },
@@ -354,16 +347,12 @@ async function run() {
               .status(400)
               .send({ message: "Invalid parcelId or riderId" });
           }
-
-          // 1️⃣ Rider খুঁজে আনবো
           const rider = await ridersCollection.findOne({
             _id: new ObjectId(riderId),
           });
           if (!rider) {
             return res.status(404).send({ message: "Rider not found" });
           }
-
-          // 2️⃣ Parcel update করবো
           const parcelUpdate = await parcelCollection.updateOne(
             { _id: new ObjectId(parcelId) },
             {
@@ -371,8 +360,9 @@ async function run() {
                 riderId: rider._id,
                 riderName: rider.name,
                 riderEmail: rider.email,
+                assigned_rider: rider.email,
                 riderContact: rider.contact,
-                delivery_status: "rider_assigned", // rider এ assign হলে parcel status update
+                delivery_status: "rider_assigned",
                 parcelStatus: "in_transit",
                 updatedAt: new Date(),
               },
@@ -385,7 +375,6 @@ async function run() {
               .send({ message: "Parcel not found or not updated" });
           }
 
-          // 3️⃣ Rider এর status আপডেট করবো (in-delivery)
           await ridersCollection.updateOne(
             { _id: new ObjectId(riderId) },
             { $set: { status: "rider_assigned" } }
@@ -401,6 +390,7 @@ async function run() {
         }
       }
     );
+
     app.get("/parcels/delivery/status-count", async (req, res) => {
       const pipeline = [
         {
@@ -520,24 +510,18 @@ async function run() {
       }
     );
     //================= Tracking APIs =================//
-    app.get("/trackings/:trackingId", async (req, res) => {
-      const trackingId = req.params.trackingId;
-      const updates = await trackingCollection
-        .find({ trackingId: trackingId })
-        .sort({ timestamp: 1 })
-        .toArray();
-      res.send(updates);
-    });
-    app.post("/trackings", verifyFBToken, verifyRider, async (req, res) => {
-      const update = req.body;
-      update.timestamp = new Date();
-      if (!update.trackingId || !update.status) {
-        return res
-          .status(400)
-          .send({ message: "tracking_id and status are required" });
+    app.get("/parcel/:trackingId", async (req, res) => {
+      const { trackingId } = req.params;
+      try {
+        const parcel = await parcelCollection.findOne({ trackingId });
+        if (!parcel) {
+          return res.status(404).send({ message: "Parcel not found" });
+        }
+        res.send(parcel);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal server error" });
       }
-      const result = await trackingCollection.insertOne(update);
-      res.status(201).send(result);
     });
     //================ Payments APIs =================//
     app.get("/payments", verifyFBToken, async (req, res) => {
@@ -552,7 +536,6 @@ async function run() {
             .send({ message: "Forbidden: No token provided" });
         }
         const query = userEmail ? { email: userEmail } : {};
-        // const options = { sort: { paid_at: -1 } }; // latest first. update korsi (query,options)
         const payments = await paymentCollection
           .find(query)
           .sort({ paid_at: -1 })
@@ -563,7 +546,6 @@ async function run() {
         res.status(500).send({ message: "failed to get payments" });
       }
     });
-    // 🔹 Get specific parcel by ID (for payment)
     app.get("/parcels/:id", async (req, res) => {
       try {
         const parcelId = req.params.id;
@@ -575,7 +557,6 @@ async function run() {
         res.status(500).send({ message: "Failed to payment parcel" });
       }
     });
-    // 🔹 Stripe payment intent create
     app.post("/create-payment-intent", async (req, res) => {
       try {
         const amountInCents = req.body.amountInCents;
@@ -590,17 +571,15 @@ async function run() {
         res.status(500).send({ error: error.message });
       }
     });
-    // 🔹 Record Payment and update parcel
     app.post("/payments", async (req, res) => {
       try {
         const { parcelId, amount, transactionId, email, paymentMethod } =
           req.body;
-        // 1: 2️⃣ Parcel status update
         const updateResult = await parcelCollection.updateOne(
           { _id: new ObjectId(parcelId) },
           {
             $set: {
-              payment_status: "paid", // 🔥 same name যেটা frontend এ ব্যবহার করছো
+              payment_status: "paid",
               parcelStatus: "processing",
               updatedAt: new Date(),
             },
@@ -611,7 +590,7 @@ async function run() {
             .status(404)
             .send({ message: "parcel not found or already paid" });
         }
-        // 2:1️⃣ Payment record insert
+
         const paymentDoc = {
           parcelId,
           amount,
@@ -631,6 +610,120 @@ async function run() {
         res.status(500).send({ success: false, error: error.message });
       }
     });
+
+    //==========================  statistic stat =========================//
+    // user state
+    app.get("/user-stat/:email", verifyFBToken, async (req, res) => {
+      try {
+        const { email } = req.params;
+        const parcels = await parcelCollection
+          .find({ created_by: email })
+          .toArray();
+        const totalParcels = parcels.length;
+        const deliveredParcels = parcels.filter(
+          (p) => p.delivery_status === "delivered"
+        ).length;
+        const totalSpent = parcels.reduce((sum, p) => {
+          if (p.payment_status === "paid") {
+            return sum + (Number(p.cost) || 0);
+          }
+          return sum;
+        }, 0);
+        res.status(200).send({
+          totalParcels,
+          deliveredParcels,
+          totalSpent,
+        });
+      } catch (error) {
+        console.error("Error fetching user stats:", error);
+        res.status(500).send({ message: "Server error fetching user stats." });
+      }
+    });
+    // admin state
+    app.get("/admin-stat", verifyFBToken, verifyAdmin, async (req, res) => {
+      const totalUsers = await usersCollection.countDocuments();
+      const totalParcels = await parcelCollection.countDocuments();
+      const totalDelivered = await parcelCollection.countDocuments({
+        delivery_status: "delivered",
+      });
+      const totalPayments = await paymentCollection
+        .find({}, { projection: { amount: 1 } })
+        .toArray();
+      const totalRevenue = totalPayments.reduce(
+        (sum, payment) => sum + (payment.amount || 0),
+        0
+      );
+      const parcels = await parcelCollection
+        .find(
+          {},
+          {
+            projection: {
+              SenderPickupWirehouse: 1,
+              reciverPickupWirehouse: 1,
+              cost: 1,
+            },
+          }
+        )
+        .toArray();
+      let totalRiderEarnings = 0;
+      parcels.forEach((parcel) => {
+        const cost = Number(parcel.cost) || 0;
+        if (!cost) return;
+
+        if (parcel.SenderPickupWirehouse === parcel.reciverPickupWirehouse) {
+          totalRiderEarnings += cost * 0.5;
+        } else {
+          totalRiderEarnings += cost * 0.8;
+        }
+      });
+      const totalProfit = totalRevenue - totalRiderEarnings;
+      res.status(200).send({
+        totalUsers,
+        totalParcels,
+        totalDelivered,
+        totalRevenue,
+        totalProfit,
+      });
+    });
+
+    // rider state
+    app.get(
+      "/rider-stat/:email",
+      verifyFBToken,
+      verifyRider,
+      async (req, res) => {
+        const { email } = req.params;
+        const parcels = await parcelCollection
+          .find({ riderEmail: email })
+          .toArray();
+
+        const totalParcels = parcels.length;
+
+        const delivered = parcels.filter(
+          (p) => p.delivery_status === "delivered"
+        ).length;
+
+        const pending = parcels.filter(
+          (p) => p.delivery_status !== "delivered"
+        ).length;
+        const totalEarnings = parcels.reduce((sum, p) => {
+          const cost = Number(p.cost) || 0;
+          const earning =
+            p.SenderPickupWirehouse === p.reciverPickupWirehouse
+              ? cost * 0.5
+              : cost * 0.8;
+
+          return sum + earning;
+        }, 0);
+        res.send({
+          totalParcels,
+          delivered,
+          pending,
+          totalEarnings,
+        });
+      }
+    );
+
     //================= MongoDB connection test =================//
     // await client.db("admin").command({ ping: 1 });
     // console.log(
